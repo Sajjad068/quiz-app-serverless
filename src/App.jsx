@@ -96,6 +96,29 @@ function AuthScreen({ onAuth }) {
   );
 }
 
+/* ---------------- نمایش متن همراه با فرمول (KaTeX) ----------------
+   $...$ فرمول درون‌خطی و $$...$$ فرمول وسط‌چین */
+function Tex({ text }) {
+  const parts = String(text || '').split(/(\$\$[\s\S]+?\$\$|\$[^$\n]+?\$)/g);
+  return (
+    <span className="qtext">
+      {parts.map((p, i) => {
+        if (!p) return null;
+        const display = p.startsWith('$$') && p.endsWith('$$') && p.length > 4;
+        const inline = !display && p.startsWith('$') && p.endsWith('$') && p.length > 2;
+        if ((display || inline) && window.katex) {
+          const src = display ? p.slice(2, -2) : p.slice(1, -1);
+          try {
+            const html = window.katex.renderToString(src, { throwOnError: false, displayMode: display });
+            return <span key={i} dangerouslySetInnerHTML={{ __html: html }} />;
+          } catch (e) { /* اگر فرمول خراب بود همان متن خام نمایش داده می‌شود */ }
+        }
+        return <span key={i}>{p}</span>;
+      })}
+    </span>
+  );
+}
+
 /* ---------------- QUIZ (چهارگزینه‌ای) ---------------- */
 function QuizTab({ onChange }) {
   const [q, setQ] = useState(null);
@@ -104,9 +127,13 @@ function QuizTab({ onChange }) {
   const [busy, setBusy] = useState(true);
   const [sending, setSending] = useState(false);
   const [msg, setMsg] = useState('');
+  const [left, setLeft] = useState(null);        // ثانیه‌های باقی‌مانده (null = بدون تایمر)
+  const [timedOut, setTimedOut] = useState(false);
+  const lockRef = useRef(false);                 // جلوگیری از ارسال دوباره / ارسال همزمان با پایان زمان
 
   const load = useCallback(async () => {
-    setPicked(null); setResult(null); setMsg(''); setBusy(true);
+    lockRef.current = false;
+    setPicked(null); setResult(null); setMsg(''); setLeft(null); setTimedOut(false); setBusy(true);
     const r = await store.nextQuestion();
     if (!r.ok) setMsg(r.msg);
     setQ(r.question || null);
@@ -115,12 +142,38 @@ function QuizTab({ onChange }) {
 
   useEffect(() => { load(); }, [load]);
 
+  /* تایمر سمت کلاینت: با ساعت واقعی حساب می‌شود تا با کند شدن تب عقب نیفتد */
+  useEffect(() => {
+    if (!q || !q.time_limit || result || timedOut) return;
+    const deadline = Date.now() + q.time_limit * 1000;
+    setLeft(q.time_limit);
+    const t = setInterval(() => {
+      const rem = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      setLeft(rem);
+      if (rem <= 0) { clearInterval(t); expire(); }
+    }, 250);
+    return () => clearInterval(t);
+  }, [q]);
+
+  async function expire() {
+    if (lockRef.current) return;
+    lockRef.current = true;
+    setTimedOut(true);
+    setSending(true);
+    // سوال به‌عنوان «بدون پاسخ» (گزینه -1) ثبت می‌شود تا دوباره نیاید و امتیازی نگیرد
+    const r = await store.submitAnswer(q.id, -1);
+    setSending(false);
+    if (r.ok) { setResult({ ...r, timedOut: true }); onChange && onChange(); }
+    else setMsg(r.msg);
+  }
+
   async function pick(i) {
-    if (result || sending) return;
+    if (result || sending || timedOut || lockRef.current) return;
+    lockRef.current = true;
     setSending(true); setPicked(i); setMsg('');
     const r = await store.submitAnswer(q.id, i);
     setSending(false);
-    if (!r.ok) { setPicked(null); setMsg(r.msg); return; }
+    if (!r.ok) { lockRef.current = false; setPicked(null); setMsg(r.msg); return; }
     setResult(r);
     onChange && onChange();
   }
@@ -139,37 +192,69 @@ function QuizTab({ onChange }) {
   }
 
   const optionClasses = (i) => {
-    if (!result) return 'border-slate-300 hover:border-indigo-500 hover:bg-indigo-50 cursor-pointer';
-    if (i === result.correctIndex) return 'border-green-500 bg-green-50 text-green-700 font-semibold';
-    if (i === picked) return 'border-red-500 bg-red-50 text-red-700';
-    return 'border-slate-200 text-slate-400';
+    if (result) {
+      if (i === result.correctIndex) return 'border-green-500 bg-green-50 text-green-700 font-semibold';
+      if (i === picked) return 'border-red-500 bg-red-50 text-red-700';
+      return 'border-slate-200 text-slate-400';
+    }
+    if (timedOut) return 'border-slate-200 text-slate-400 cursor-not-allowed';
+    return 'border-slate-300 hover:border-indigo-500 hover:bg-indigo-50 cursor-pointer';
   };
+
+  const showTimer = !!q.time_limit && left !== null;
+  const urgent = showTimer && left <= 5 && !result;
+  const finished = !!result || timedOut;
 
   return (
     <div className="card p-6">
       <div className="flex justify-between items-center mb-3">
         <span className="text-sm text-slate-500">سوال ریاضی (امتیاز: {q.points})</span>
-        {result && <button onClick={load} className="text-sm text-indigo-600 hover:underline">سوال بعدی ←</button>}
+        {finished && !sending && <button onClick={load} className="text-sm text-indigo-600 hover:underline">سوال بعدی ←</button>}
       </div>
-      <p className="text-xl font-bold mb-5">{q.text}</p>
+
+      {showTimer && (
+        <div className="mb-4">
+          <div className={'flex justify-between text-sm mb-1 ' + (timedOut ? 'text-red-600 font-semibold' : (urgent ? 'text-red-600 font-semibold' : 'text-slate-500'))}>
+            <span>{timedOut ? '⏰ زمان این سوال تمام شد' : '⏱ زمان باقی‌مانده'}</span>
+            <span>{left} ثانیه</span>
+          </div>
+          <div className="h-2 rounded-full bg-slate-200 overflow-hidden">
+            <div className={'h-full rounded-full ' + (urgent || timedOut ? 'bg-red-500' : 'bg-indigo-500')}
+              style={{ width: (finished && !timedOut ? 0 : (left / q.time_limit) * 100) + '%', transition: 'width .25s linear' }} />
+          </div>
+        </div>
+      )}
+
+      <p className="text-xl font-bold mb-5"><Tex text={q.text} /></p>
+
+      {q.image_url && (
+        <img src={q.image_url} alt="شکل سوال" className="max-h-72 max-w-full mx-auto mb-5 rounded-lg border bg-white" />
+      )}
 
       {msg && <div className="mb-3 text-sm text-red-600">{msg}</div>}
 
       <div className="grid grid-cols-2 gap-3">
         {q.options.map((opt, i) => (
-          <button key={i} onClick={() => pick(i)} disabled={!!result || sending}
+          <button key={i} onClick={() => pick(i)} disabled={finished || sending}
             className={'btn border-2 rounded-xl py-3 text-lg font-medium ' + optionClasses(i)}>
             <span className="inline-block w-6 h-6 rounded-full bg-slate-100 text-slate-600 text-sm leading-6 ml-2">{'ABCD'[i]}</span>
-            {opt}
+            <Tex text={opt} />
           </button>
         ))}
       </div>
 
-      {result && (
+      {timedOut && (
+        <div className="mt-4 rounded-lg p-4 text-center bg-amber-50 text-amber-800">
+          ⏰ زمان این سوال تمام شد و دیگر نمی‌توانید پاسخ دهید.
+          {result && <> پاسخ درست گزینه <b>{'ABCD'[result.correctIndex]}</b> بود.</>}
+        </div>
+      )}
+
+      {result && !result.timedOut && (
         <div className={'mt-4 rounded-lg p-4 text-center ' + (result.correct ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700')}>
           {result.correct
             ? `آفرین! ${result.gained} امتیاز کسب کردید.`
-            : `اشتباه بود. پاسخ درست گزینه ${q.options[result.correctIndex]} بود.`}
+            : <>اشتباه بود. پاسخ درست گزینه <b>{'ABCD'[result.correctIndex]}</b> بود.</>}
         </div>
       )}
     </div>
@@ -246,8 +331,34 @@ function TeacherPanel({ onBack }) {
   const [options, setOptions] = useState(['', '', '', '']);
   const [correct, setCorrect] = useState(0);
   const [points, setPoints] = useState(10);
+  const [timeLimit, setTimeLimit] = useState('');
+  const [imageUrl, setImageUrl] = useState('');
+  const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(true);
+  const focusRef = useRef({ kind: 'text', i: 0 }); // آخرین فیلدی که فوکوس داشته (برای دکمه‌های فرمول)
+
+  const SNIPPETS = [
+    ['کسر', '$\\frac{a}{b}$'], ['توان', '$x^{2}$'], ['اندیس', '$x_{1}$'], ['رادیکال', '$\\sqrt{x}$'],
+    ['×', '$\\times$'], ['÷', '$\\div$'], ['≤', '$\\leq$'], ['≥', '$\\geq$'], ['π', '$\\pi$'], ['زاویه', '$\\angle ABC$'], ['درجه', '$90^{\\circ}$'],
+  ];
+
+  function insertSnippet(s) {
+    const f = focusRef.current;
+    if (f.kind === 'opt') setOptions(o => o.map((x, j) => (j === f.i ? x + s : x)));
+    else setText(t => t + s);
+  }
+
+  async function onPickImage(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    setUploading(true); setErr('');
+    const r = await store.uploadQuestionImage(file);
+    setUploading(false);
+    if (!r.ok) { setErr(r.msg); return; }
+    setImageUrl(r.url);
+  }
 
   async function refresh() {
     const r = await store.getTeacherQuestions();
@@ -258,10 +369,12 @@ function TeacherPanel({ onBack }) {
   useEffect(() => { refresh(); }, []);
 
   function startNew() {
-    setEditing('new'); setText(''); setOptions(['', '', '', '']); setCorrect(0); setPoints(10); setErr('');
+    setEditing('new'); setText(''); setOptions(['', '', '', '']); setCorrect(0); setPoints(10);
+    setTimeLimit(''); setImageUrl(''); setErr('');
   }
   function startEdit(q) {
-    setEditing(q.id); setText(q.text); setOptions(q.options.slice()); setCorrect(q.correct); setPoints(q.points); setErr('');
+    setEditing(q.id); setText(q.text); setOptions(q.options.slice()); setCorrect(q.correct); setPoints(q.points);
+    setTimeLimit(q.time_limit ? String(q.time_limit) : ''); setImageUrl(q.image_url || ''); setErr('');
   }
   function cancel() { setEditing(null); setErr(''); }
 
@@ -273,11 +386,15 @@ function TeacherPanel({ onBack }) {
     if (options.some(o => !String(o).trim())) { setErr('هر چهار گزینه باید پر شوند.'); return; }
     const p = points === '' ? 10 : Math.round(Number(points));
     if (!Number.isFinite(p) || p < 0) { setErr('امتیاز باید عدد صفر یا بیشتر باشد.'); return; }
+    const tl = String(timeLimit).trim() === '' ? null : Math.round(Number(timeLimit));
+    if (tl !== null && (!Number.isFinite(tl) || tl < 5 || tl > 600)) { setErr('زمان سوال باید بین ۵ تا ۶۰۰ ثانیه باشد (یا خالی برای بدون تایمر).'); return; }
     const data = {
       text: text.trim(),
       options: options.map(o => String(o).trim()),
       correct: Number(correct) || 0,
       points: p,
+      image_url: imageUrl || null,
+      time_limit: tl,
     };
     const r = editing === 'new'
       ? await store.addQuestions([data])
@@ -335,21 +452,64 @@ function TeacherPanel({ onBack }) {
         <div className="card p-4">
           <h2 className="font-semibold mb-3">{editing === 'new' ? 'سوال جدید' : 'ویرایش سوال'}</h2>
           <form onSubmit={save} className="space-y-3">
-            <textarea value={text} onChange={e => setText(e.target.value)} rows={2}
-              placeholder="متن سوال (مثلاً: ۷ × ۸ = ؟)" className="w-full border rounded-lg px-3 py-2" />
+            <div className="flex flex-wrap gap-1 items-center">
+              <span className="text-xs text-slate-500 ml-1">فرمول:</span>
+              {SNIPPETS.map(([label, s]) => (
+                <button key={label} type="button" onClick={() => insertSnippet(s)}
+                  className="btn text-xs bg-slate-100 hover:bg-slate-200 rounded px-2 py-1">{label}</button>
+              ))}
+            </div>
+            <textarea value={text} onChange={e => setText(e.target.value)} rows={3}
+              onFocus={() => { focusRef.current = { kind: 'text', i: 0 }; }}
+              placeholder="متن سوال؛ فرمول را بین دلار بنویسید: $\frac{3}{4}$ — فرمول وسط‌چین: $$x^2+1$$" className="w-full border rounded-lg px-3 py-2" />
             <div className="grid grid-cols-2 gap-2">
               {options.map((o, i) => (
                 <div key={i} className="flex items-center gap-2">
                   <input type="radio" name="correct" checked={correct === i} onChange={() => setCorrect(i)} title="پاسخ درست" />
                   <span className="text-xs text-slate-500 w-10">گزینه {'ABCD'[i]}</span>
                   <input value={o} onChange={e => setOpt(i, e.target.value)} placeholder={'گزینه ' + 'ABCD'[i]}
+                    onFocus={() => { focusRef.current = { kind: 'opt', i }; }}
                     className="flex-1 border rounded-lg px-3 py-2" />
                 </div>
               ))}
             </div>
-            <div className="text-xs text-slate-500">رادیوی کنار گزینه، پاسخ درست را مشخص می‌کند.</div>
-            <input type="number" value={points} onChange={e => setPoints(e.target.value)}
-              placeholder="امتیاز" className="w-40 border rounded-lg px-3 py-2" />
+            <div className="text-xs text-slate-500">رادیوی کنار گزینه، پاسخ درست را مشخص می‌کند. دکمه‌های فرمول در آخرین فیلدی که کلیک کرده‌اید درج می‌شوند.</div>
+
+            <div className="rounded-lg border bg-slate-50 p-3 space-y-2">
+              <div className="text-xs text-slate-500">پیش‌نمایش (همان‌طور که دانش‌آموز می‌بیند)</div>
+              <div className="text-lg font-bold"><Tex text={text || '…'} /></div>
+              {imageUrl && <img src={imageUrl} alt="شکل سوال" className="max-h-48 rounded border bg-white" />}
+              <div className="grid grid-cols-2 gap-2">
+                {options.map((o, i) => (
+                  <div key={i} className={'rounded-lg border px-3 py-2 ' + (correct === i ? 'border-green-500 bg-green-50' : 'bg-white')}>
+                    {'ABCD'[i]}) <Tex text={o || '…'} />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="text-sm">امتیاز
+                <input type="number" value={points} onChange={e => setPoints(e.target.value)}
+                  placeholder="امتیاز" className="w-28 border rounded-lg px-3 py-2 mr-2" />
+              </label>
+              <label className="text-sm">زمان (ثانیه)
+                <input type="number" value={timeLimit} onChange={e => setTimeLimit(e.target.value)}
+                  placeholder="بدون تایمر" min="5" max="600" className="w-32 border rounded-lg px-3 py-2 mr-2" />
+              </label>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="btn cursor-pointer bg-sky-100 text-sky-800 hover:bg-sky-200 rounded-lg py-2 px-3 text-sm font-semibold">
+                {uploading ? 'در حال آپلود…' : (imageUrl ? '🖼 تغییر تصویر' : '🖼 افزودن تصویر / شکل')}
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" className="hidden"
+                  onChange={onPickImage} disabled={uploading} />
+              </label>
+              {imageUrl && (
+                <button type="button" onClick={() => setImageUrl('')} className="text-sm text-red-600 hover:underline">حذف تصویر</button>
+              )}
+              <span className="text-xs text-slate-400">PNG / JPG / WEBP / GIF / SVG — حداکثر ۲ مگابایت</span>
+            </div>
             <div className="flex gap-2">
               <button type="submit" className="btn bg-green-600 text-white rounded-lg py-2 px-4 font-semibold hover:bg-green-700">ذخیره</button>
               <button type="button" onClick={cancel} className="btn bg-slate-200 rounded-lg py-2 px-4 font-semibold">لغو</button>
@@ -374,8 +534,12 @@ function TeacherPanel({ onBack }) {
             <tbody>
               {qs.map(q => (
                 <tr key={q.id} className="border-t">
-                  <td className="px-4 py-3">{q.text}</td>
-                  <td className="px-4 py-3 text-green-700 font-medium">{q.options[q.correct]}</td>
+                  <td className="px-4 py-3">
+                    <Tex text={q.text} />
+                    {q.image_url && <span title="دارای تصویر"> 🖼</span>}
+                    {q.time_limit ? <span className="text-xs text-slate-500" title="زمان سوال"> ⏱{q.time_limit}s</span> : null}
+                  </td>
+                  <td className="px-4 py-3 text-green-700 font-medium"><Tex text={q.options[q.correct]} /></td>
                   <td className="px-4 py-3">{q.points}</td>
                   <td className="px-4 py-3 space-x-2 space-x-reverse">
                     <button onClick={() => startEdit(q)} className="text-indigo-600 hover:underline">ویرایش</button>

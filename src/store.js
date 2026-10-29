@@ -155,6 +155,18 @@ const remoteStore = {
     return okOrErr(error);
   },
 
+  async uploadQuestionImage(file) {
+    if (!file) return { ok: false, msg: 'فایلی انتخاب نشد.' };
+    if (!/^image\/(png|jpeg|webp|gif|svg\+xml)$/.test(file.type)) return { ok: false, msg: 'فقط تصویر PNG، JPG، WEBP، GIF یا SVG مجاز است.' };
+    if (file.size > 2 * 1024 * 1024) return { ok: false, msg: 'حجم تصویر باید کمتر از ۲ مگابایت باشد.' };
+    const ext = (file.name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+    const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const { error } = await db.storage.from('question-images').upload(path, file, { contentType: file.type, cacheControl: '31536000' });
+    if (error) return { ok: false, msg: friendlyError(error) };
+    const { data } = db.storage.from('question-images').getPublicUrl(path);
+    return { ok: true, url: data.publicUrl };
+  },
+
   async resetScores() {
     const { error } = await db.rpc('reset_scores');
     return okOrErr(error);

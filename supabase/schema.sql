@@ -17,9 +17,16 @@ create table if not exists public.questions (
   options text[] not null check (array_length(options, 1) = 4),
   correct integer not null check (correct between 0 and 3),
   points integer not null default 10 check (points >= 0),
+  image_url text,
+  time_limit integer check (time_limit is null or time_limit between 5 and 600),
   created_by uuid references auth.users on delete set null,
   created_at timestamptz not null default now()
 );
+
+-- برای دیتابیسی که نسخهٔ قبلی را دارد
+alter table public.questions add column if not exists image_url text;
+alter table public.questions add column if not exists time_limit integer
+  check (time_limit is null or time_limit between 5 and 600);
 
 -- پاسخ‌های داده‌شده: هر دانش‌آموز هر سوال را فقط یک‌بار می‌تواند جواب دهد
 create table if not exists public.answers (
@@ -95,7 +102,7 @@ create policy "teachers delete questions" on public.questions
 
 -- ستون «correct» (پاسخ درست) برای کلاینت قابل خواندن نیست
 revoke select on public.questions from anon, authenticated;
-grant select (id, text, options, points, created_at) on public.questions to authenticated;
+grant select (id, text, options, points, image_url, time_limit, created_at) on public.questions to authenticated;
 
 -- ---------- سیاست‌های answers (نوشتن فقط از طریق submit_answer) ----------
 drop policy if exists "read own answers" on public.answers;
@@ -107,10 +114,11 @@ grant select on public.answers to authenticated;
 -- ---------- توابع (RPC) ----------
 
 -- یک سوال تصادفی که هنوز جواب داده نشده (بدون پاسخ درست)
+drop function if exists public.next_question();
 create or replace function public.next_question()
-returns table(id uuid, text text, options text[], points integer)
+returns table(id uuid, text text, options text[], points integer, image_url text, time_limit integer)
 language sql stable security definer set search_path = public as $$
-  select q.id, q.text, q.options, q.points
+  select q.id, q.text, q.options, q.points, q.image_url, q.time_limit
     from public.questions q
    where not exists (
            select 1 from public.answers a
@@ -120,6 +128,8 @@ language sql stable security definer set search_path = public as $$
 $$;
 
 -- ثبت پاسخ: درستی در سرور بررسی و امتیاز همان‌جا اضافه می‌شود
+-- p_option = -1 یعنی «تمام شدن زمان» (بدون پاسخ): سوال سوخته و بدون امتیاز ثبت می‌شود.
+-- زمان‌سنجی فقط در مرورگر انجام می‌شود و سرور آن را بررسی نمی‌کند (مبنا بر اعتماد).
 create or replace function public.submit_answer(p_question uuid, p_option integer)
 returns table(r_correct boolean, r_correct_index integer, r_gained integer, r_total integer)
 language plpgsql security definer set search_path = public as $$
@@ -134,7 +144,7 @@ begin
   select * into q from public.questions where id = p_question;
   if not found then raise exception 'سوال پیدا نشد.'; end if;
 
-  if p_option is null or p_option < 0 or p_option > 3 then raise exception 'گزینه نامعتبر است.'; end if;
+  if p_option is null or p_option < -1 or p_option > 3 then raise exception 'گزینه نامعتبر است.'; end if;
 
   if exists (select 1 from public.answers a where a.user_id = auth.uid() and a.question_id = q.id) then
     raise exception 'این سوال را قبلاً جواب داده‌اید.';
@@ -168,13 +178,15 @@ language sql stable security definer set search_path = public as $$
 $$;
 
 -- فهرست کامل سوال‌ها همراه با پاسخ درست (فقط معلم)
+drop function if exists public.teacher_questions();
 create or replace function public.teacher_questions()
-returns table(id uuid, text text, options text[], correct integer, points integer, created_at timestamptz)
+returns table(id uuid, text text, options text[], correct integer, points integer,
+              image_url text, time_limit integer, created_at timestamptz)
 language plpgsql stable security definer set search_path = public as $$
 begin
   if not public.is_teacher() then raise exception 'فقط معلم دسترسی دارد.'; end if;
   return query
-    select q.id, q.text, q.options, q.correct, q.points, q.created_at
+    select q.id, q.text, q.options, q.correct, q.points, q.image_url, q.time_limit, q.created_at
       from public.questions q order by q.created_at;
 end $$;
 
@@ -198,6 +210,25 @@ grant execute on function public.submit_answer(uuid, integer) to authenticated;
 grant execute on function public.get_leaderboard() to authenticated;
 grant execute on function public.teacher_questions() to authenticated;
 grant execute on function public.reset_scores() to authenticated;
+
+-- ---------- ذخیره‌سازی تصویر سوال‌ها (Storage) ----------
+-- همه می‌توانند تصویر را ببینند؛ فقط معلم می‌تواند آپلود یا حذف کند.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('question-images', 'question-images', true, 2097152,
+        array['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'])
+on conflict (id) do update
+  set public = true,
+      file_size_limit = 2097152,
+      allowed_mime_types = array['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'];
+
+drop policy if exists "question images teacher insert" on storage.objects;
+drop policy if exists "question images teacher delete" on storage.objects;
+create policy "question images teacher insert" on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'question-images' and public.is_teacher());
+create policy "question images teacher delete" on storage.objects
+  for delete to authenticated
+  using (bucket_id = 'question-images' and public.is_teacher());
 
 -- بعد از اینکه معلم از داخل برنامه ثبت‌نام کرد، این را اجرا کنید (نام کاربری خودتان را بگذارید):
 -- update public.profiles set role = 'teacher' where username = 'teacher';

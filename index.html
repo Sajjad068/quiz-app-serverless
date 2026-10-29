@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="vendor/katex/katex.min.css" />
   <script src="vendor/tailwind.js"></script>
   <script>
     tailwind.config = {
@@ -25,6 +26,9 @@
     .tab-active { border-bottom: 3px solid #4f46e5; color: #4f46e5; }
     input, textarea { direction: rtl; }
     .masked { letter-spacing: 4px; font-family: monospace; }
+    .katex { direction: ltr; unicode-bidi: isolate; }
+    .katex-display { margin: .6em 0; }
+    .qtext { white-space: pre-line; }
   </style>
 </head>
 <body class="bg-slate-100 min-h-screen text-slate-800">
@@ -32,6 +36,7 @@
 
   <script src="vendor/react.min.js"></script>
   <script src="vendor/react-dom.min.js"></script>
+  <script src="vendor/katex/katex.min.js"></script>
   <script src="vendor/babel.min.js"></script>
   <script src="config.js"></script>
   <script src="vendor/supabase.js"></script>
