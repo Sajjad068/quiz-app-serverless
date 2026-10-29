@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>کوییز ریاضی</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="vendor/tailwind.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { vazir: ['Vazirmatn', 'system-ui', 'sans-serif'] }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: 'Vazirmatn', system-ui, sans-serif; }
+    .card { background: #fff; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,.08); }
+    .btn { transition: all .15s ease; }
+    .btn:active { transform: scale(.98); }
+    .tab-active { border-bottom: 3px solid #4f46e5; color: #4f46e5; }
+    input, textarea { direction: rtl; }
+    .masked { letter-spacing: 4px; font-family: monospace; }
+  </style>
+</head>
+<body class="bg-slate-100 min-h-screen text-slate-800">
+  <div id="root"></div>
+
+  <script src="vendor/react.min.js"></script>
+  <script src="vendor/react-dom.min.js"></script>
+  <script src="vendor/babel.min.js"></script>
+  <script src="config.js"></script>
+  <script src="vendor/supabase.js"></script>
+  <script type="text/babel" src="src/store.js"></script>
+  <script type="text/babel" src="src/App.jsx"></script>
+</body>
+</html>
